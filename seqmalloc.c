@@ -2,6 +2,8 @@
 #define _GNU_SOURCE
 #include <dlfcn.h>
 
+#include <assert.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -21,7 +23,7 @@
  */
 
 // print debug-level messages for every malloc hook
-#define SEQMALOC_DEBUG
+#define SEQMALOC_DEBUG              0
 // initial seqmalloc block size in bytes (default: 1 huge page = 2mb)
 #define SEQMALLOC_SIZE_INITIAL      HUGEPAGE
 // controls size increase of next block when current is exhausted
@@ -33,7 +35,7 @@
  * End seqmalloc compile time options
  */
 
-#ifdef SEQMALOC_DEBUG
+#if SEQMALOC_DEBUG
 #define PRINT_DEBUG(STR, ...) \
     fprintf(stdout, "%s:%d %s " STR "\n", __FILE__, __LINE__, __func__, ##__VA_ARGS__);
 
@@ -62,9 +64,9 @@ struct block_t
 
 typedef struct block_t block_t;
 
-// thread local data
-// ptr to block in use for allocations
-static _Thread_local block_t* curr_block;
+// thread data
+// can't use standard _Thread_local, since it calls malloc
+static pthread_key_t curr_block_key;
 
 // global data
 // as threads exit, can't immediately free blocks
@@ -72,6 +74,25 @@ static _Thread_local block_t* curr_block;
 // needs to be an atomic pointer to a block_t
 static block_t* _Atomic orphan_block_list = NULL;
 static int initialized = 0;
+
+// thread-specific data helpers
+block_t* get_curr_block()
+{
+    static bool init_tsd = false;
+
+    if (!init_tsd)
+    {
+        init_tsd = true;
+        pthread_key_create(&curr_block_key, NULL);
+    }
+
+    return (block_t*)pthread_getspecific(curr_block_key);
+}
+
+void set_curr_block(block_t* block)
+{
+    pthread_setspecific(curr_block_key, (void*)block);
+}
 
 /*
  * Begin seq_malloc functions
@@ -86,6 +107,8 @@ void seq_malloc_initialize()
     PRINT_DEBUG();
     if (atexit(seq_malloc_finalize) != 0)
         PRINT_ERR("cannot set exit function");
+
+    setbuf(stdout, NULL);
 }
 
 void seq_malloc_finalize()
@@ -111,27 +134,25 @@ void seq_malloc_finalize()
 
 void seq_malloc_thread_initialize()
 {
-    PRINT_DEBUG();
+    PRINT_DEBUG("%p", (void*)pthread_self());
 }
 
 void seq_malloc_thread_finalize()
 {
-    PRINT_DEBUG();
-
-    if (curr_block == NULL)
-        return;
+    PRINT_DEBUG("%p", (void*)pthread_self());
 
     // append blocks to global orphan list
-    block_t* first_block = curr_block;
+    block_t* first_block = get_curr_block();
+    if (first_block == NULL)
+        return; // no blocks to append
+
     while (first_block && first_block->prev_block)
         first_block = first_block->prev_block;
 
     block_t* last_head = atomic_load_explicit(&orphan_block_list, memory_order_relaxed);
     while (!atomic_compare_exchange_weak_explicit(
-                &orphan_block_list, &last_head, curr_block,
-                memory_order_acq_rel, memory_order_acquire))
-        ;
-
+                &orphan_block_list, &last_head, get_curr_block(),
+                memory_order_acq_rel, memory_order_acquire));
 
     if (first_block)
         first_block->prev_block = last_head;
@@ -140,40 +161,48 @@ void seq_malloc_thread_finalize()
 bool alloc_next_block()
 {
     size_t next_block_size = SEQMALLOC_SIZE_INITIAL;
-    if (curr_block)
-        next_block_size = curr_block->size * SEQMALLOC_SIZE_MULT;
 
-    block_t* prev_block = curr_block;
+    block_t* prev_block = get_curr_block();
+    if (prev_block)
+        next_block_size = prev_block->size * SEQMALLOC_SIZE_MULT;
  
     int prot = PROT_READ | PROT_WRITE;
     int flags = MAP_PRIVATE | MAP_ANONYMOUS;
-    curr_block = (block_t*)mmap(NULL, next_block_size, prot, flags, -1, 0);
-    if (curr_block == MAP_FAILED)
+    block_t* next_block = (block_t*)mmap(NULL, next_block_size, prot, flags, -1, 0);
+    if (next_block == MAP_FAILED)
     {
         PRINT_ERR("mmap failed");
-        curr_block = NULL;
+        set_curr_block(NULL);
         return false;
     }
 
-    curr_block->prev_block = prev_block;
-    curr_block->size = next_block_size;
-    curr_block->max_ptr = (char*)curr_block + curr_block->size;
-    curr_block->curr_ptr = &curr_block->data[0];
+    next_block->prev_block = prev_block;
+    next_block->size = next_block_size;
+    next_block->max_ptr = (char*)next_block + next_block->size;
+    next_block->curr_ptr = &next_block->data[0];
+
+    set_curr_block(next_block);
     return true;
 }
 
 void* alloc(size_t size, size_t alignment)
 {
-    if (curr_block == NULL && !alloc_next_block())
-        return NULL;
+    PRINT_DEBUG("thread: %p", (void*)pthread_self());
 
     do
     {
+        block_t* curr_block = get_curr_block();
+        if (curr_block == NULL)
+            continue;
+
         char* ptr = curr_block->curr_ptr;
         ptr = ALIGN_ADDR(ptr, alignment);
 
         if (ptr + size < curr_block->max_ptr)
+        {
+            curr_block->curr_ptr = ptr + size;
             return (void*)ptr;
+        }
     }
     while (alloc_next_block());
 
@@ -182,16 +211,22 @@ void* alloc(size_t size, size_t alignment)
 
 void* seq_malloc(size_t size)
 {
+    PRINT_DEBUG();
+
     return alloc(size, sizeof(void*));
 }
 
 void seq_free(void* ptr)
 {
+    PRINT_DEBUG();
+
     // no-op
 }
 
 void* seq_calloc(size_t n, size_t size)
 {
+    PRINT_DEBUG();
+
     if (size && n > SIZE_MAX / size)
         return NULL;
 
@@ -200,6 +235,8 @@ void* seq_calloc(size_t n, size_t size)
 
 void* seq_realloc(void* ptr, size_t size)
 {
+    PRINT_DEBUG();
+
     void* new_ptr = seq_malloc(size);
     // @todo: need to copy data from ptr to new_ptr;
     seq_free(ptr); 
@@ -208,6 +245,8 @@ void* seq_realloc(void* ptr, size_t size)
 
 int seq_posix_memalign(void** memptr, size_t alignment, size_t size)
 {
+    PRINT_DEBUG();
+
     void* ptr = alloc(size, alignment);
     if (!ptr)
         return ENOMEM;
@@ -218,21 +257,29 @@ int seq_posix_memalign(void** memptr, size_t alignment, size_t size)
 
 void* seq_aligned_alloc(size_t alignment, size_t size)
 {
+    PRINT_DEBUG();
+
     return alloc(size, alignment);
 }
 
 void* seq_valloc(size_t size)
 {
+    PRINT_DEBUG();
+
     return alloc(size, PAGE);
 }
 
 void* seq_memalign(size_t alignment, size_t size)
 {
+    PRINT_DEBUG();
+
     return alloc(size, alignment);
 }
 
 void* seq_pvalloc(size_t size)
 {
+    PRINT_DEBUG();
+
     size = ALIGN_ADDR(size, PAGE);
     return alloc(size, PAGE);
 }
@@ -317,7 +364,6 @@ int pthread_create(pthread_t* thread,
     thread_starter_arg* starter_arg = &ring_buffer[buffer_pos];
     starter_arg->real_start = start_routine;
     starter_arg->real_arg = arg;
-    seq_malloc_thread_initialize();
     return pthread_create_fn(thread, attr, thread_initializer, starter_arg);
 }
 
