@@ -6,8 +6,16 @@ LDFLAGS=-ldl -pthread $(DFLAGS)
 
 default: seqmalloc.so
 
+all: seqmalloc.so seqmalloc.a
+
 seqmalloc.so: seqmalloc.c
 	$(CC) $(LDFLAGS) $(CFLAGS) -o seqmalloc.so seqmalloc.c
 
+seqmalloc.a: seqmalloc.o
+	ar rcs seqmalloc.a seqmalloc.o
+
+seqmalloc.o: seqmalloc.c
+	$(CC) $(LDFLAGS) $(CFLAGS) -c -o seqmalloc.o seqmalloc.c
+
 clean:
-	rm -f *.so
+	rm -f *.so *.o *.a
