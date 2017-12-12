@@ -10,6 +10,10 @@
 #define PAGE        ((size_t)(1U << LG_PAGE))
 #define HUGEPAGE    ((size_t)(1U << LG_HUGEPAGE))
 
+// minimum alignment requirement all allocations must meet
+// "address returned by malloc will be suitably aligned to store any kind of variable"
+#define MIN_ALIGN sizeof(void*)
+
 // returns smallest address >= addr with alignment align
 #define ALIGN_ADDR(addr, align) \
         ( __typeof__ (addr))(((size_t)(addr) + (align - 1)) & ((~(align)) + 1))

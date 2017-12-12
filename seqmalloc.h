@@ -12,6 +12,7 @@
 #define seq_free free
 #define seq_calloc calloc
 #define seq_realloc realloc
+#define seq_malloc_usable_size malloc_usable_size
 #define seq_posix_memalign posix_memalign
 #define seq_aligned_alloc aligned_alloc
 #define seq_valloc valloc
@@ -35,6 +36,8 @@ void* seq_calloc(size_t n, size_t size)
     SEQMALLOC_EXPORT SEQMALLOC_NOTHROW SEQMALLOC_ALLOC_SIZE2(1, 2);
 void* seq_realloc(void* ptr, size_t size)
     SEQMALLOC_EXPORT SEQMALLOC_NOTHROW SEQMALLOC_ALLOC_SIZE(2);
+// utilities
+size_t seq_malloc_usable_size(void* ptr);
 // memory alignment ops
 int seq_posix_memalign(void** memptr, size_t alignment, size_t size)
     SEQMALLOC_EXPORT SEQMALLOC_NOTHROW SEQMALLOC_ATTR(nonnull(1))

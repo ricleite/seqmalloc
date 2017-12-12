@@ -4,6 +4,7 @@
 
 #include <assert.h>
 
+#include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -93,6 +94,15 @@ void set_curr_block(block_t* block)
 {
     pthread_setspecific(curr_block_key, (void*)block);
 }
+
+// per-alloc data
+struct alloc_data_t
+{
+    size_t size; // size in bytes
+    char data[ ];
+} SEQMALLOC_ATTR(aligned(MIN_ALIGN));
+
+typedef struct alloc_data_t alloc_data_t;
 
 /*
  * Begin seq_malloc functions
@@ -185,6 +195,15 @@ bool alloc_next_block()
     return true;
 }
 
+// retrieve alloc_data_t from alloc'd ptr
+alloc_data_t* ptr2data(void* ptr)
+{
+    // | alloc_data_t | alloc |
+    // alloc data is located on the words before alloc
+    // no issues with alignment, since ptr has at least MIN_ALIGN 
+    return &((alloc_data_t*)ptr)[-1];
+}
+
 void* alloc(size_t size, size_t alignment)
 {
     PRINT_DEBUG("thread: %p", (void*)pthread_self());
@@ -195,11 +214,15 @@ void* alloc(size_t size, size_t alignment)
         if (curr_block == NULL)
             continue;
 
-        char* ptr = curr_block->curr_ptr;
+        // reserve some space for alloc_data_t
+        char* ptr = curr_block->curr_ptr + sizeof(alloc_data_t);
         ptr = ALIGN_ADDR(ptr, alignment);
 
         if (ptr + size < curr_block->max_ptr)
         {
+            alloc_data_t* data = ptr2data(ptr);
+            data->size = size;
+
             curr_block->curr_ptr = ptr + size;
             return (void*)ptr;
         }
@@ -213,7 +236,7 @@ void* seq_malloc(size_t size)
 {
     PRINT_DEBUG();
 
-    return alloc(size, sizeof(void*));
+    return alloc(size, MIN_ALIGN);
 }
 
 void seq_free(void* ptr)
@@ -238,9 +261,24 @@ void* seq_realloc(void* ptr, size_t size)
     PRINT_DEBUG();
 
     void* new_ptr = seq_malloc(size);
-    // @todo: need to copy data from ptr to new_ptr;
+
+    if (ptr)
+    {
+        alloc_data_t* data = ptr2data(ptr);
+        memcpy(new_ptr, ptr, data->size);
+    }
+
     seq_free(ptr); 
     return new_ptr;
+}
+
+size_t seq_malloc_usable_size(void* ptr)
+{
+    if (ptr == NULL)
+        return 0;
+
+    alloc_data_t* data = ptr2data(ptr);
+    return data->size;
 }
 
 int seq_posix_memalign(void** memptr, size_t alignment, size_t size)
