@@ -1,3 +1,7 @@
+/*
+ * Copyright (C) 2019 Ricardo Leite. All rights reserved.
+ * Licenced under the MIT licence. See COPYING file in the project root for details.
+ */
 
 #ifndef __SEQMALLOC_H__
 #define __SEQMALLOC_H__
@@ -40,8 +44,7 @@ void* seq_realloc(void* ptr, size_t size)
 size_t seq_malloc_usable_size(void* ptr);
 // memory alignment ops
 int seq_posix_memalign(void** memptr, size_t alignment, size_t size)
-    SEQMALLOC_EXPORT SEQMALLOC_NOTHROW SEQMALLOC_ATTR(nonnull(1))
-    SEQMALLOC_ALLOC_SIZE(3);
+    SEQMALLOC_EXPORT SEQMALLOC_NOTHROW SEQMALLOC_ATTR(nonnull(1));
 void* seq_aligned_alloc(size_t alignment, size_t size)
     SEQMALLOC_EXPORT SEQMALLOC_NOTHROW SEQMALLOC_ALLOC_SIZE(2);
 void* seq_valloc(size_t size)
