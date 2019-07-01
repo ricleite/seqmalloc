@@ -29,7 +29,7 @@ at compile time with:
 or you can dynamically link it with your application by using LD_PRELOAD (if
 your application was not statically linked with another memory allocator).
 ```console
-LD_PRELOAD=lrmalloc.so ./your_application
+LD_PRELOAD=seqmalloc.so ./your_application
 ```
 
 ## Copyright
